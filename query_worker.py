@@ -276,7 +276,7 @@ def query_thread(
             
             # Production-grade execution profile with TokenAware + DCAware
             # DCAwareRoundRobinPolicy prefers local DC nodes, falls back to remote DCs
-            lbp = TokenAwarePolicy(DCAwareRoundRobinPolicy(local_dc=local_dc))
+            lbp = TokenAwarePolicy(DCAwareRoundRobinPolicy(local_dc=local_dc), shuffle_replicas=True)
             profile = ExecutionProfile(
                 load_balancing_policy=lbp,
                 consistency_level=consistency,
