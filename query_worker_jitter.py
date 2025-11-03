@@ -336,16 +336,14 @@ def query_thread(
             
             logger.info(f"Datacenter: {local_dc} (detected={detected_dc is not None}, source={'detected' if detected_dc else 'config/default'})")
             logger.info(f"Rack: {local_rack} (detected={detected_rack is not None}, source={'detected' if detected_rack else 'config/default'})")
-            logger.warning(f"IMPORTANT: DC name must match ScyllaDB cluster datacenter. Detected: {local_dc}")
             
-            # Production-grade execution profile with TokenAware + RackAware
-            # RackAwareRoundRobinPolicy prefers local rack nodes, then local DC nodes, then remote DCs
-            if local_rack:
-                base_policy = RackAwareRoundRobinPolicy(local_dc=local_dc, local_rack=local_rack)
-                logger.info(f"Using RackAwareRoundRobinPolicy: dc={local_dc}, rack={local_rack}")
-            else:
-                base_policy = DCAwareRoundRobinPolicy(local_dc=local_dc)
-                logger.info(f"Using DCAwareRoundRobinPolicy: dc={local_dc}")
+            # RACK-AWARE ONLY: Query local rack first, then other racks in DC, then remote DCs
+            if not local_rack:
+                logger.error("FATAL: Rack not detected and not configured. Cannot use RackAwareRoundRobinPolicy.")
+                raise ValueError("Rack awareness requires --local-rack or EC2 metadata")
+            
+            base_policy = RackAwareRoundRobinPolicy(local_dc=local_dc, local_rack=local_rack)
+            logger.info(f"Using RackAwareRoundRobinPolicy: dc={local_dc}, rack={local_rack}")
             
             lbp = TokenAwarePolicy(base_policy, shuffle_replicas=True)
             profile = ExecutionProfile(

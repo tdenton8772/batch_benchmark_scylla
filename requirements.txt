@@ -1,4 +1,13 @@
+# Core dependencies
 cassandra-driver>=3.28.0
 python-dotenv>=1.0.0
 PyYAML>=6.0
 requests>=2.31.0
+
+# High-performance event loops for cassandra-driver
+# Provides much better throughput than default asyncore
+gevent>=23.9.1
+
+# Optional: libev is even faster but requires compilation
+# Uncomment if you can compile C extensions:
+# pylibev>=0.1.0
