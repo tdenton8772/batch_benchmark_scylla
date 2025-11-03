@@ -44,7 +44,8 @@ def distribute_files(files: List[str], worker_count: int) -> Dict[int, List[str]
 def run_local_mode(
     assignments: Dict[int, List[str]],
     config: Dict[str, any],
-    passthrough_args: List[str]
+    passthrough_args: List[str],
+    worker_script: str = 'query_worker.py'
 ):
     """Run workers as local subprocesses."""
     print(f"Starting {len(assignments)} worker(s) in LOCAL mode")
@@ -63,7 +64,7 @@ def run_local_mode(
             # Build command
             cmd = [
                 sys.executable,
-                'query_worker.py',
+                worker_script,
                 '--worker-id', str(worker_id),
                 '--files', *files,
                 '--hosts', config['scylla_hosts'],
@@ -258,6 +259,11 @@ def parse_args():
         default=int(os.getenv('WORKER_COUNT', '3')),
         help='Number of workers to spawn'
     )
+    parser.add_argument(
+        '--worker-script',
+        default=os.getenv('WORKER_SCRIPT', 'query_worker.py'),
+        help='Worker script to use (default: query_worker.py)'
+    )
     
     # Output files
     parser.add_argument(
@@ -342,7 +348,7 @@ def main():
     
     # Execute based on mode
     if args.mode == 'local':
-        run_local_mode(assignments, config, passthrough_args)
+        run_local_mode(assignments, config, passthrough_args, args.worker_script)
     
     elif args.mode == 'docker':
         generate_docker_compose(assignments, config, args.output)
