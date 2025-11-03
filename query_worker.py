@@ -13,10 +13,13 @@ import logging
 import os
 import queue
 import signal
+import struct
 import sys
 import threading
 import time
 import uuid
+from random import shuffle
+
 import requests
 from collections import deque
 from typing import List, Optional, Dict, Any
@@ -25,7 +28,9 @@ from cassandra import ConsistencyLevel
 from cassandra.auth import PlainTextAuthProvider
 from cassandra.cluster import Cluster, ExecutionProfile, EXEC_PROFILE_DEFAULT
 from cassandra.concurrent import execute_concurrent_with_args
-from cassandra.policies import DCAwareRoundRobinPolicy, TokenAwarePolicy, FallthroughRetryPolicy, ConstantSpeculativeExecutionPolicy, WhiteListRoundRobinPolicy, RackAwareRoundRobinPolicy
+from cassandra.policies import DCAwareRoundRobinPolicy, TokenAwarePolicy, FallthroughRetryPolicy, \
+    ConstantSpeculativeExecutionPolicy, WhiteListRoundRobinPolicy, RackAwareRoundRobinPolicy, HostDistance, \
+    LoadBalancingPolicy
 from cassandra.query import SimpleStatement
 from dotenv import load_dotenv
 from cassandra.policies import WhiteListRoundRobinPolicy
@@ -36,6 +41,104 @@ load_dotenv()
 
 # Sentinel value to signal end of data
 SENTINEL = None
+
+
+class TokenAwarePolicyCustom(LoadBalancingPolicy):
+    """
+    A :class:`.LoadBalancingPolicy` wrapper that adds token awareness to
+    a child policy.
+
+    This alters the child policy's behavior so that it first attempts to
+    send queries to :attr:`~.HostDistance.LOCAL` replicas (as determined
+    by the child policy) based on the :class:`.Statement`'s
+    :attr:`~.Statement.routing_key`. If :attr:`.shuffle_replicas` is
+    truthy, these replicas will be yielded in a random order. Once those
+    hosts are exhausted, the remaining hosts in the child policy's query
+    plan will be used in the order provided by the child policy.
+
+    If no :attr:`~.Statement.routing_key` is set on the query, the child
+    policy's query plan will be used as is.
+    """
+
+    _child_policy = None
+    _cluster_metadata = None
+    shuffle_replicas = False
+    """
+    Yield local replicas in a random order.
+    """
+
+    def __init__(self, child_policy, shuffle_replicas=False):
+        self._child_policy = child_policy
+        self.shuffle_replicas = shuffle_replicas
+
+    def populate(self, cluster, hosts):
+        self._cluster_metadata = cluster.metadata
+        self._child_policy.populate(cluster, hosts)
+
+    def check_supported(self):
+        if not self._cluster_metadata.can_support_partitioner():
+            raise RuntimeError(
+                '%s cannot be used with the cluster partitioner (%s) because '
+                'the relevant C extension for this driver was not compiled. '
+                'See the installation instructions for details on building '
+                'and installing the C extensions.' %
+                (self.__class__.__name__, self._cluster_metadata.partitioner))
+
+    def distance(self, *args, **kwargs):
+        return self._child_policy.distance(*args, **kwargs)
+
+    def make_query_plan(self, working_keyspace=None, query=None):
+        keyspace = query.keyspace if query and query.keyspace else working_keyspace
+
+        child = self._child_policy
+        if query is None or query.routing_key is None or keyspace is None:
+            for host in child.make_query_plan(keyspace, query):
+                yield host
+            return
+
+        replicas = []
+        if self._cluster_metadata._tablets._tablets.get((keyspace, query.table), []):
+            tablet = self._cluster_metadata._tablets.get_tablet_for_key(
+                keyspace, query.table, self._cluster_metadata.token_map.token_class.from_key(query.routing_key))
+
+            if tablet is not None:
+                replicas_mapped = set(map(lambda r: r[0], tablet.replicas))
+                child_plan = child.make_query_plan(keyspace, query)
+
+                replicas = [host for host in child_plan if host.host_id in replicas_mapped]
+        else:
+            replicas = self._cluster_metadata.get_replicas(keyspace, query.routing_key)
+
+        if self.shuffle_replicas:
+            shuffle(replicas)
+
+        def yield_in_order(hosts):
+            for replica in hosts:
+                if replica.is_up and child.distance(replica) == HostDistance.LOCAL_RACK:
+                    yield replica
+
+            for replica in hosts:
+                if replica.is_up and child.distance(replica) == HostDistance.LOCAL:
+                    yield replica
+
+            for replica in hosts:
+                if replica.is_up and child.distance(replica) == HostDistance.REMOTE:
+                    yield replica
+
+        yield from yield_in_order(replicas)
+        yield from yield_in_order([host for host in child.make_query_plan(keyspace, query) if host not in replicas])
+
+    def on_up(self, *args, **kwargs):
+        return self._child_policy.on_up(*args, **kwargs)
+
+    def on_down(self, *args, **kwargs):
+        return self._child_policy.on_down(*args, **kwargs)
+
+    def on_add(self, *args, **kwargs):
+        return self._child_policy.on_add(*args, **kwargs)
+
+    def on_remove(self, *args, **kwargs):
+        return self._child_policy.on_remove(*args, **kwargs)
 
 
 def get_ec2_metadata(path: str, timeout: float = 0.1) -> Optional[str]:
@@ -340,10 +443,11 @@ def query_thread(
                 logger.error("FATAL: Rack not detected and not configured. Cannot use RackAwareRoundRobinPolicy.")
                 raise ValueError("Rack awareness requires --local-rack or EC2 metadata")
             
+            # base_policy = DCAwareRoundRobinPolicy(local_dc=local_dc)
             base_policy = RackAwareRoundRobinPolicy(local_dc=local_dc, local_rack=local_rack)
             logger.info(f"Using RackAwareRoundRobinPolicy: dc={local_dc}, rack={local_rack}")
             
-            lbp = TokenAwarePolicy(base_policy, shuffle_replicas=True)
+            lbp = TokenAwarePolicyCustom(base_policy, shuffle_replicas=True)
             profile = ExecutionProfile(
                 load_balancing_policy=lbp,
                 consistency_level=consistency,
@@ -354,26 +458,6 @@ def query_thread(
                 # ),
                 retry_policy=FallthroughRetryPolicy(),
             )
-            
-            # Create cluster with increased connection pool for high concurrency
-            # Set max_requests_per_connection to support higher concurrency per connection
-            # Note: Use libev or gevent event loop for Python 3.12+
-            event_loop_used = None
-            try:
-                from cassandra.io.libevreactor import LibevConnection
-                LibevConnection.max_in_flight = 32768
-                event_loop_used = 'libev'
-                logger.info(f"Using LibevConnection with max_in_flight=32768")
-            except ImportError:
-                try:
-                    from cassandra.io.geventreactor import GeventConnection
-                    GeventConnection.max_in_flight = 32768
-                    event_loop_used = 'gevent'
-                    logger.info(f"Using GeventConnection with max_in_flight=32768")
-                except ImportError:
-                    # Fallback - driver will use default event loop
-                    event_loop_used = 'default'
-                    logger.warning("Using default event loop - may have lower throughput")
 
             cluster = Cluster(
                 contact_points=contact_points,
@@ -412,9 +496,38 @@ def query_thread(
             prepared.is_idempotent = True
             prepared.consistency_level = consistency
             prepared.fetch_size = 1
-            
-            logger.info(f"Connected to ScyllaDB, keyspace={config['scylla_keyspace']}")
-        
+        #
+        #     cql_bulk = f"SELECT * FROM {config['scylla_table']} WHERE sort_key IN (?) BYPASS CACHE"
+        #     prepared_bulk = session.prepare(cql_bulk)
+        #     prepared_bulk.is_idempotent = True
+        #     prepared_bulk.consistency_level = consistency
+        #     prepared_bulk.fetch_size = 1
+        #
+        #     logger.info(f"Connected to ScyllaDB, keyspace={config['scylla_keyspace']}")
+        #
+        # def _key_parts_packed(self, parts):
+        #     for p in parts:
+        #         l = len(p)
+        #         yield struct.pack(">H%dsB" % l, l, p, 0)
+        #
+        # def get_routing_key(prepared, values):
+        #     routing_indexes = prepared.routing_key_indexes
+        #     if len(routing_indexes) == 1:
+        #         return values[routing_indexes[0]]
+        #     return b"".join(_key_parts_packed(values[i] for i in routing_indexes))
+        #
+        # def get_key_replica(session, prepared, values):
+        #     routing_key = get_routing_key(prepared, values)
+        #     tablet = self._cluster_metadata._tablets.get_tablet_for_key(
+        #         keyspace, query.table, self._cluster_metadata.token_map.token_class.from_key(query.routing_key))
+        #
+        #     if tablet is not None:
+        #         replicas_mapped = set(map(lambda r: r[0], tablet.replicas))
+        #         child_plan = child.make_query_plan(keyspace, query)
+        #
+        #         replicas = [host for host in child_plan if host.host_id in replicas_mapped]
+
+
         # Metrics reporting
         last_metrics_time = time.time()
         metrics_interval = config['metrics_interval_secs']
