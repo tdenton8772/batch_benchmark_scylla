@@ -649,27 +649,27 @@ def main():
         
         logger.info(f"Assigned files: {files}")
         
-    # Configuration
-    config = {
-        'batch_size': args.batch_size,
-        'queue_size': args.queue_size,
-        'concurrency': args.concurrency,
-        'query_timeout_secs': args.query_timeout_secs,
-        'metrics_interval_secs': args.metrics_interval_secs,
-        'jitter_ms': args.jitter_ms,
-        'sort_key_column': args.sort_key_column,
-        'csv_has_header': args.csv_has_header,
-        'scylla_hosts': args.hosts,
-        'scylla_port': args.port,
-        'scylla_keyspace': args.keyspace,
-        'scylla_table': args.table,
-        'scylla_username': args.username,
-        'scylla_password': args.password,
-        'scylla_consistency': args.consistency,
-        'local_dc': args.local_dc,
-        'local_rack': args.local_rack,
-        'dry_run': args.dry_run,
-    }
+        # Configuration
+        config = {
+            'batch_size': args.batch_size,
+            'queue_size': args.queue_size,
+            'concurrency': args.concurrency,
+            'query_timeout_secs': args.query_timeout_secs,
+            'metrics_interval_secs': args.metrics_interval_secs,
+            'jitter_ms': args.jitter_ms,
+            'sort_key_column': args.sort_key_column,
+            'csv_has_header': args.csv_has_header,
+            'scylla_hosts': args.hosts,
+            'scylla_port': args.port,
+            'scylla_keyspace': args.keyspace,
+            'scylla_table': args.table,
+            'scylla_username': args.username,
+            'scylla_password': args.password,
+            'scylla_consistency': args.consistency,
+            'local_dc': args.local_dc,
+            'local_rack': args.local_rack,
+            'dry_run': args.dry_run,
+        }
         
         logger.info(f"Configuration: batch_size={config['batch_size']}, "
                     f"queue_size={config['queue_size']}, concurrency={config['concurrency']}, "
