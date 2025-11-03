@@ -50,7 +50,7 @@ class WorkerMetrics:
         self.total_errors = 0
         self.files_processed = 0
         self.rows_read = 0
-        self.recent_queries = deque(maxlen=1000)  # Store timestamps for QPS calculation
+        self.recent_queries = deque(maxlen=50000)  # Store timestamps for QPS calculation (up to 10K QPS)
     
     def record_batch_submitted(self, count: int):
         with self.lock:
@@ -274,9 +274,9 @@ def query_thread(
             # Local DC for DCAwareRoundRobinPolicy
             local_dc = config.get('local_dc', 'aws-us-east-1')
             
-            # Production-grade execution profile with TokenAware + WhiteList to prevent internal IP connections
-            # WhiteListRoundRobinPolicy keeps connections to the contact points only
-            lbp = TokenAwarePolicy(WhiteListRoundRobinPolicy(contact_points))
+            # Production-grade execution profile with TokenAware + DCAware
+            # DCAwareRoundRobinPolicy prefers local DC nodes, falls back to remote DCs
+            lbp = TokenAwarePolicy(DCAwareRoundRobinPolicy(local_dc=local_dc), shuffle_replicas=True)
             profile = ExecutionProfile(
                 load_balancing_policy=lbp,
                 consistency_level=consistency,
@@ -287,6 +287,26 @@ def query_thread(
                 ),
                 retry_policy=FallthroughRetryPolicy(),
             )
+            
+            # Create cluster with increased connection pool for high concurrency
+            # Set max_requests_per_connection to support higher concurrency per connection
+            # Note: Use libev or gevent event loop for Python 3.12+
+            event_loop_used = None
+            try:
+                from cassandra.io.libevreactor import LibevConnection
+                LibevConnection.max_in_flight = 32768
+                event_loop_used = 'libev'
+                logger.info(f"Using LibevConnection with max_in_flight=32768")
+            except ImportError:
+                try:
+                    from cassandra.io.geventreactor import GeventConnection
+                    GeventConnection.max_in_flight = 32768
+                    event_loop_used = 'gevent'
+                    logger.info(f"Using GeventConnection with max_in_flight=32768")
+                except ImportError:
+                    # Fallback - driver will use default event loop
+                    event_loop_used = 'default'
+                    logger.warning("Using default event loop - may have lower throughput")
             
             cluster = Cluster(
                 contact_points=contact_points,
@@ -319,13 +339,14 @@ def query_thread(
                     retry_delay *= 2  # Exponential backoff
             
             # Prepare statement with idempotency and fetch_size
-            cql = f"SELECT * FROM {config['scylla_table']} WHERE sort_key = ? LIMIT 1"
+            cql = f"SELECT * FROM {config['scylla_table']} WHERE sort_key = ? LIMIT 1 BYPASS CACHE"
             prepared = session.prepare(cql)
             prepared.is_idempotent = True
             prepared.consistency_level = consistency
             prepared.fetch_size = 1
             
             logger.info(f"Connected to ScyllaDB, keyspace={config['scylla_keyspace']}")
+            logger.info(f"Query configuration: concurrency={config['concurrency']}, batch_size={config['batch_size']}, timeout={config['query_timeout_secs']}s")
         
         # Metrics reporting
         last_metrics_time = time.time()
@@ -362,8 +383,8 @@ def query_thread(
                     metrics.record_batch_results(ok=batch_size, found=batch_size, not_found=0, timeouts=0, errors=0)
                 else:
                     # Execute concurrent queries
-                    # Calculate concurrency dynamically (64-512 range based on batch size)
-                    concurrency = max(64, min(512, batch_size))
+                    # Use configured concurrency value
+                    concurrency = config['concurrency']
                     args_list = [(key,) for key in batch]
                     
                     batch_start = time.time()
