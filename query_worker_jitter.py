@@ -72,8 +72,20 @@ def detect_datacenter_and_rack() -> tuple[Optional[str], Optional[str]]:
     if availability_zone:
         # Extract region from AZ (e.g., us-east-1a -> us-east-1)
         region = availability_zone[:-1]
-        datacenter = f'aws-{region}'
-        rack = availability_zone  # Use full AZ as rack (e.g., us-east-1a)
+        az_suffix = availability_zone[-1]  # 'a', 'b', etc.
+        
+        # ScyllaDB typically uses rack names like "use1-az1", "use1-az2", etc.
+        # Map AZ letter to number (a=1, b=2, c=3, d=4, e=5, f=6)
+        az_num = str(ord(az_suffix) - ord('a') + 1)
+        
+        # Format: use1-az1, usw2-az3, etc.
+        region_abbr = region.replace('us-east-', 'use').replace('us-west-', 'usw').replace('eu-west-', 'euw').replace('-', '')
+        rack = f"{region_abbr}-az{az_num}"
+        
+        # Datacenter: ScyllaDB AWS convention is uppercase with underscores
+        # e.g., us-east-1 -> AWS_US_EAST_1
+        datacenter = f"AWS_{region.upper().replace('-', '_')}"
+        
         return (datacenter, rack)
     
     # Could add GCP/Azure detection here
@@ -319,11 +331,12 @@ def query_thread(
             detected_dc, detected_rack = detect_datacenter_and_rack()
             
             # Use detected values, fall back to config, then defaults
-            local_dc = detected_dc or config.get('local_dc') or 'aws-us-east-1'
+            local_dc = detected_dc or config.get('local_dc') or 'AWS_US_EAST_1'
             local_rack = detected_rack or config.get('local_rack')
             
-            logger.info(f"Datacenter: {local_dc} (detected={detected_dc is not None})")
-            logger.info(f"Rack: {local_rack} (detected={detected_rack is not None})")
+            logger.info(f"Datacenter: {local_dc} (detected={detected_dc is not None}, source={'detected' if detected_dc else 'config/default'})")
+            logger.info(f"Rack: {local_rack} (detected={detected_rack is not None}, source={'detected' if detected_rack else 'config/default'})")
+            logger.warning(f"IMPORTANT: DC name must match ScyllaDB cluster datacenter. Detected: {local_dc}")
             
             # Production-grade execution profile with TokenAware + RackAware
             # RackAwareRoundRobinPolicy prefers local rack nodes, then local DC nodes, then remote DCs
