@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 import uuid
+import requests
 from collections import deque
 from typing import List, Optional, Dict, Any
 
@@ -24,7 +25,7 @@ from cassandra import ConsistencyLevel
 from cassandra.auth import PlainTextAuthProvider
 from cassandra.cluster import Cluster, ExecutionProfile, EXEC_PROFILE_DEFAULT
 from cassandra.concurrent import execute_concurrent_with_args
-from cassandra.policies import DCAwareRoundRobinPolicy, TokenAwarePolicy, FallthroughRetryPolicy, ConstantSpeculativeExecutionPolicy, WhiteListRoundRobinPolicy
+from cassandra.policies import DCAwareRoundRobinPolicy, TokenAwarePolicy, FallthroughRetryPolicy, ConstantSpeculativeExecutionPolicy, WhiteListRoundRobinPolicy, RackAwareRoundRobinPolicy
 from cassandra.query import SimpleStatement
 from dotenv import load_dotenv
 from cassandra.policies import WhiteListRoundRobinPolicy
@@ -35,6 +36,59 @@ load_dotenv()
 
 # Sentinel value to signal end of data
 SENTINEL = None
+
+
+def get_ec2_metadata(path: str, timeout: float = 0.1) -> Optional[str]:
+    """Fetch EC2 instance metadata with short timeout."""
+    try:
+        # IMDSv2 - get token first
+        token_url = 'http://169.254.169.254/latest/api/token'
+        token_headers = {'X-aws-ec2-metadata-token-ttl-seconds': '21600'}
+        token_response = requests.put(token_url, headers=token_headers, timeout=timeout)
+        token = token_response.text
+        
+        # Fetch metadata with token
+        metadata_url = f'http://169.254.169.254/latest/meta-data/{path}'
+        headers = {'X-aws-ec2-metadata-token': token}
+        response = requests.get(metadata_url, headers=headers, timeout=timeout)
+        
+        if response.status_code == 200:
+            return response.text.strip()
+    except Exception:
+        pass
+    return None
+
+
+def detect_datacenter_and_rack() -> tuple[Optional[str], Optional[str]]:
+    """Auto-detect datacenter and rack from cloud provider metadata.
+    
+    Returns:
+        (datacenter, rack) tuple. Both can be None if detection fails.
+    """
+    # Try AWS EC2
+    availability_zone = get_ec2_metadata('placement/availability-zone')
+    if availability_zone:
+        # Extract region from AZ (e.g., us-east-1a -> us-east-1)
+        region = availability_zone[:-1]
+        az_suffix = availability_zone[-1]  # 'a', 'b', etc.
+        
+        # ScyllaDB typically uses rack names like "use1-az1", "use1-az2", etc.
+        # Map AZ letter to number (a=1, b=2, c=3, d=4, e=5, f=6)
+        az_num = str(ord(az_suffix) - ord('a') + 1)
+        
+        # Format: use1-az1, usw2-az3, etc.
+        region_abbr = region.replace('us-east-', 'use').replace('us-west-', 'usw').replace('eu-west-', 'euw').replace('-', '')
+        rack = f"{region_abbr}-az{az_num}"
+        
+        # Datacenter: ScyllaDB AWS convention is uppercase with underscores
+        # e.g., us-east-1 -> AWS_US_EAST_1
+        datacenter = f"AWS_{region.upper().replace('-', '_')}"
+        
+        return (datacenter, rack)
+    
+    # Could add GCP/Azure detection here
+    
+    return (None, None)
 
 
 class WorkerMetrics:
@@ -271,12 +325,25 @@ def query_thread(
                 ConsistencyLevel.LOCAL_ONE
             )
             
-            # Local DC for DCAwareRoundRobinPolicy
-            local_dc = config.get('local_dc', 'aws-us-east-1')
+            # Auto-detect or use configured DC/rack
+            detected_dc, detected_rack = detect_datacenter_and_rack()
             
-            # Production-grade execution profile with TokenAware + DCAware
-            # DCAwareRoundRobinPolicy prefers local DC nodes, falls back to remote DCs
-            lbp = TokenAwarePolicy(DCAwareRoundRobinPolicy(local_dc=local_dc), shuffle_replicas=True)
+            # Use detected values, fall back to config, then defaults
+            local_dc = detected_dc or config.get('local_dc') or 'AWS_US_EAST_1'
+            local_rack = detected_rack or config.get('local_rack')
+            
+            logger.info(f"Datacenter: {local_dc} (detected={detected_dc is not None}, source={'detected' if detected_dc else 'config/default'})")
+            logger.info(f"Rack: {local_rack} (detected={detected_rack is not None}, source={'detected' if detected_rack else 'config/default'})")
+            
+            # RACK-AWARE ONLY: Query local rack first, then other racks in DC, then remote DCs
+            if not local_rack:
+                logger.error("FATAL: Rack not detected and not configured. Cannot use RackAwareRoundRobinPolicy.")
+                raise ValueError("Rack awareness requires --local-rack or EC2 metadata")
+            
+            base_policy = RackAwareRoundRobinPolicy(local_dc=local_dc, local_rack=local_rack)
+            logger.info(f"Using RackAwareRoundRobinPolicy: dc={local_dc}, rack={local_rack}")
+            
+            lbp = TokenAwarePolicy(base_policy, shuffle_replicas=True)
             profile = ExecutionProfile(
                 load_balancing_policy=lbp,
                 consistency_level=consistency,
