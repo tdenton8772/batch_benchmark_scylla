@@ -495,8 +495,8 @@ def query_thread(
                             if success:
                                 # Query succeeded - check if row was found
                                 ok_count += 1
-                                row = result.one()
-                                if row is None:
+                                # result is already the row from execute_single_query
+                                if result is None:
                                     not_found_count += 1
                                 else:
                                     found_count += 1
@@ -511,10 +511,10 @@ def query_thread(
                                     logger.warning(f"Query error: {error_type} - {result}")
                         
                         batch_duration = time.time() - batch_start
-                        per_req_duration = batch_duration / max(1, len(args_list))
+                        per_req_duration = batch_duration / max(1, batch_size)
                         
                         logger.debug(
-                            f"Batch: {len(args_list)} keys - found={found_count}, not_found={not_found_count}, "
+                            f"Batch: {batch_size} keys - found={found_count}, not_found={not_found_count}, "
                             f"timeouts={timeout_count}, errors={error_count}, concurrency={concurrency}, "
                             f"elapsed={batch_duration:.3f}s ({per_req_duration:.6f}s/req)"
                         )
