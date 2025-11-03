@@ -50,7 +50,7 @@ class WorkerMetrics:
         self.total_errors = 0
         self.files_processed = 0
         self.rows_read = 0
-        self.recent_queries = deque(maxlen=50000)  # Store timestamps for QPS calculation (up to 10K QPS)
+        self.recent_queries = deque(maxlen=50000)  # Store timestamps for QPS calculation
     
     def record_batch_submitted(self, count: int):
         with self.lock:
@@ -276,19 +276,19 @@ def query_thread(
             
             # Production-grade execution profile with TokenAware + DCAware
             # DCAwareRoundRobinPolicy prefers local DC nodes, falls back to remote DCs
-            lbp = TokenAwarePolicy(DCAwareRoundRobinPolicy(local_dc=local_dc), shuffle_replicas=True)
+            lbp = TokenAwarePolicy(DCAwareRoundRobinPolicy(local_dc=local_dc))
             profile = ExecutionProfile(
                 load_balancing_policy=lbp,
                 consistency_level=consistency,
                 request_timeout=config['query_timeout_secs'],
-                speculative_execution_policy=ConstantSpeculativeExecutionPolicy(
-                    delay=config['query_timeout_secs'] * 0.10,  # 10% of timeout
-                    max_attempts=2
-                ),
+                # speculative_execution_policy=ConstantSpeculativeExecutionPolicy(
+                #     delay=config['query_timeout_secs'] * 0.10,  # 10% of timeout
+                #     max_attempts=2
+                # ),
                 retry_policy=FallthroughRetryPolicy(),
             )
             
-            # Create cluster with increased connection pool for high concurrency
+                        # Create cluster with increased connection pool for high concurrency
             # Set max_requests_per_connection to support higher concurrency per connection
             # Note: Use libev or gevent event loop for Python 3.12+
             event_loop_used = None
@@ -307,7 +307,7 @@ def query_thread(
                     # Fallback - driver will use default event loop
                     event_loop_used = 'default'
                     logger.warning("Using default event loop - may have lower throughput")
-            
+
             cluster = Cluster(
                 contact_points=contact_points,
                 port=port,
@@ -319,6 +319,7 @@ def query_thread(
                 idle_heartbeat_interval=30,  # Keep connections alive
                 idle_heartbeat_timeout=30,
                 prepare_on_all_hosts=True,
+                compression='lz4',
                 reprepare_on_up=True,
             )
             
@@ -346,7 +347,6 @@ def query_thread(
             prepared.fetch_size = 1
             
             logger.info(f"Connected to ScyllaDB, keyspace={config['scylla_keyspace']}")
-            logger.info(f"Query configuration: concurrency={config['concurrency']}, batch_size={config['batch_size']}, timeout={config['query_timeout_secs']}s")
         
         # Metrics reporting
         last_metrics_time = time.time()
@@ -383,8 +383,8 @@ def query_thread(
                     metrics.record_batch_results(ok=batch_size, found=batch_size, not_found=0, timeouts=0, errors=0)
                 else:
                     # Execute concurrent queries
-                    # Use configured concurrency value
-                    concurrency = config['concurrency']
+                    # Calculate concurrency dynamically (64-512 range based on batch size)
+                    concurrency = max(64, min(512, batch_size))
                     args_list = [(key,) for key in batch]
                     
                     batch_start = time.time()
