@@ -281,14 +281,14 @@ def query_thread(
                 load_balancing_policy=lbp,
                 consistency_level=consistency,
                 request_timeout=config['query_timeout_secs'],
-                # speculative_execution_policy=ConstantSpeculativeExecutionPolicy(
-                #     delay=config['query_timeout_secs'] * 0.10,  # 10% of timeout
-                #     max_attempts=2
-                # ),
+                speculative_execution_policy=ConstantSpeculativeExecutionPolicy(
+                    delay=config['query_timeout_secs'] * 0.10,  # 10% of timeout
+                    max_attempts=2
+                ),
                 retry_policy=FallthroughRetryPolicy(),
             )
             
-                        # Create cluster with increased connection pool for high concurrency
+            # Create cluster with increased connection pool for high concurrency
             # Set max_requests_per_connection to support higher concurrency per connection
             # Note: Use libev or gevent event loop for Python 3.12+
             event_loop_used = None
