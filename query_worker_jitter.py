@@ -20,7 +20,6 @@ import time
 import uuid
 import requests
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Optional, Dict, Any
 
 from cassandra import ConsistencyLevel
@@ -451,36 +450,31 @@ def query_thread(
                     time.sleep(0.001 * batch_size)  # Simulate some work
                     metrics.record_batch_results(ok=batch_size, found=batch_size, not_found=0, timeouts=0, errors=0)
                 else:
-                    # Execute concurrent queries with ThreadPoolExecutor
+                    # Execute concurrent queries with async execution and per-query jitter
                     concurrency = config['concurrency']
                     jitter_ms = config.get('jitter_ms', 0)
                     
                     batch_start = time.time()
                     try:
-                        # Execute queries with jitter using ThreadPoolExecutor
-                        def execute_single_query(key):
-                            # Add jitter before executing
+                        # Submit all queries asynchronously with jitter
+                        futures = []
+                        for key in batch:
+                            # Add jitter before each query submission
                             if jitter_ms > 0:
                                 time.sleep(random.uniform(0, jitter_ms / 1000.0))
                             
-                            try:
-                                result = session.execute(prepared, (key,))
-                                row = result.one()
-                                return (True, row)
-                            except Exception as e:
-                                return (False, e)
+                            # Submit async query
+                            future = session.execute_async(prepared, (key,))
+                            futures.append(future)
                         
-                        # Submit all queries to thread pool
+                        # Collect results
                         results = []
-                        with ThreadPoolExecutor(max_workers=concurrency) as executor:
-                            futures = {executor.submit(execute_single_query, key): key for key in batch}
-                            
-                            for future in as_completed(futures):
-                                try:
-                                    success, result = future.result()
-                                    results.append((success, result))
-                                except Exception as e:
-                                    results.append((False, e))
+                        for future in futures:
+                            try:
+                                result = future.result()
+                                results.append((True, result))
+                            except Exception as e:
+                                results.append((False, e))
                         
                         # Count results: found, not_found, timeouts, errors
                         ok_count = 0
@@ -493,8 +487,8 @@ def query_thread(
                             if success:
                                 # Query succeeded - check if row was found
                                 ok_count += 1
-                                # result is already the row from execute_single_query
-                                if result is None:
+                                row = result.one()
+                                if row is None:
                                     not_found_count += 1
                                 else:
                                     found_count += 1
@@ -514,7 +508,7 @@ def query_thread(
                         logger.debug(
                             f"Batch: {batch_size} keys - found={found_count}, not_found={not_found_count}, "
                             f"timeouts={timeout_count}, errors={error_count}, concurrency={concurrency}, "
-                            f"elapsed={batch_duration:.3f}s ({per_req_duration:.6f}s/req)"
+                            f"jitter_ms={jitter_ms}, elapsed={batch_duration:.3f}s ({per_req_duration:.6f}s/req)"
                         )
                         
                         metrics.record_batch_results(
