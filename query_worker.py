@@ -474,16 +474,22 @@ def query_thread(
                 LibevConnection.max_in_flight = 32768
                 event_loop_used = 'libev'
                 logger.info(f"Using LibevConnection with max_in_flight=32768")
-            except ImportError:
+            except (ImportError, Exception) as e:
                 try:
                     from cassandra.io.geventreactor import GeventConnection
                     GeventConnection.max_in_flight = 32768
                     event_loop_used = 'gevent'
                     logger.info(f"Using GeventConnection with max_in_flight=32768")
-                except ImportError:
-                    # Fallback - driver will use default event loop
-                    event_loop_used = 'default'
-                    logger.warning("Using default event loop - may have lower throughput")
+                except (ImportError, Exception) as e2:
+                    # Fallback - use default asyncore event loop and set max_in_flight
+                    try:
+                        from cassandra.io.asyncorereactor import AsyncoreConnection
+                        AsyncoreConnection.max_in_flight = 32768
+                        event_loop_used = 'asyncore'
+                        logger.info(f"Using AsyncoreConnection with max_in_flight=32768")
+                    except Exception as e3:
+                        event_loop_used = 'default'
+                        logger.warning(f"Could not set max_in_flight on default connection - may have lower throughput")
 
             cluster = Cluster(
                 contact_points=contact_points,
