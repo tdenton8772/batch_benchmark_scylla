@@ -168,26 +168,22 @@ def detect_datacenter_and_rack() -> tuple[Optional[str], Optional[str]]:
     Returns:
         (datacenter, rack) tuple. Both can be None if detection fails.
     """
-    # Try AWS EC2
-    availability_zone = get_ec2_metadata('placement/availability-zone')
-    if availability_zone:
-        # Extract region from AZ (e.g., us-east-1a -> us-east-1)
-        region = availability_zone[:-1]
-        az_suffix = availability_zone[-1]  # 'a', 'b', etc.
-        
-        # ScyllaDB typically uses rack names like "use1-az1", "use1-az2", etc.
-        # Map AZ letter to number (a=1, b=2, c=3, d=4, e=5, f=6)
-        az_num = str(ord(az_suffix) - ord('a') + 1)
-        
-        # Format: use1-az1, usw2-az3, etc.
-        region_abbr = region.replace('us-east-', 'use').replace('us-west-', 'usw').replace('eu-west-', 'euw').replace('-', '')
-        rack = f"{region_abbr}-az{az_num}"
-        
-        # Datacenter: ScyllaDB AWS convention is uppercase with underscores
-        # e.g., us-east-1 -> AWS_US_EAST_1
-        datacenter = f"AWS_{region.upper().replace('-', '_')}"
-        
-        return (datacenter, rack)
+    # Try AWS EC2 - use availability-zone-id which is consistent across accounts
+    # availability-zone-id returns values like "use1-az1", "use1-az5" etc.
+    rack = get_ec2_metadata('placement/availability-zone-id')
+    
+    if rack:
+        # Get the region for datacenter name
+        availability_zone = get_ec2_metadata('placement/availability-zone')
+        if availability_zone:
+            # Extract region from AZ (e.g., us-east-1a -> us-east-1)
+            region = availability_zone[:-1]
+            
+            # Datacenter: ScyllaDB AWS convention is uppercase with underscores
+            # e.g., us-east-1 -> AWS_US_EAST_1
+            datacenter = f"AWS_{region.upper().replace('-', '_')}"
+            
+            return (datacenter, rack)
     
     # Could add GCP/Azure detection here
     
