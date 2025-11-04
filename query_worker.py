@@ -467,6 +467,24 @@ def query_thread(
                 retry_policy=FallthroughRetryPolicy(),
             )
 
+            # Increase max_in_flight to support high concurrency
+            event_loop_used = None
+            try:
+                from cassandra.io.libevreactor import LibevConnection
+                LibevConnection.max_in_flight = 32768
+                event_loop_used = 'libev'
+                logger.info(f"Using LibevConnection with max_in_flight=32768")
+            except ImportError:
+                try:
+                    from cassandra.io.geventreactor import GeventConnection
+                    GeventConnection.max_in_flight = 32768
+                    event_loop_used = 'gevent'
+                    logger.info(f"Using GeventConnection with max_in_flight=32768")
+                except ImportError:
+                    # Fallback - driver will use default event loop
+                    event_loop_used = 'default'
+                    logger.warning("Using default event loop - may have lower throughput")
+
             cluster = Cluster(
                 contact_points=contact_points,
                 port=port,
