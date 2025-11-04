@@ -325,9 +325,9 @@ def query_thread(
             # Auto-detect or use configured DC/rack
             detected_dc, detected_rack = detect_datacenter_and_rack()
             
-            # Use detected values, fall back to config, then defaults
-            local_dc = detected_dc or config.get('local_dc') or 'AWS_US_EAST_1'
-            local_rack = detected_rack or config.get('local_rack')
+            # Priority: config > detected > defaults
+            local_dc = config.get('local_dc') or detected_dc or 'AWS_US_EAST_1'
+            local_rack = config.get('local_rack') or detected_rack
             
             logger.info(f"Datacenter: {local_dc} (detected={detected_dc is not None}, source={'detected' if detected_dc else 'config/default'})")
             logger.info(f"Rack: {local_rack} (detected={detected_rack is not None}, source={'detected' if detected_rack else 'config/default'})")
