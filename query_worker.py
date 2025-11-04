@@ -544,8 +544,9 @@ def query_thread(
                     concurrency = max(64, min(512, batch_size))
                     args_list = [(key,) for key in batch]
                     
-                    batch_start = time.time()
                     try:
+                        # Measure only the execute_concurrent_with_args call
+                        batch_start = time.time()
                         results = execute_concurrent_with_args(
                             session,
                             prepared,
@@ -554,6 +555,8 @@ def query_thread(
                             raise_on_first_error=False,
                             results_generator=False
                         )
+                        batch_duration = time.time() - batch_start
+                        batch_latency_ms = batch_duration * 1000
                         
                         # Count results: found, not_found, timeouts, errors
                         ok_count = 0
@@ -580,9 +583,6 @@ def query_thread(
                                 else:
                                     error_count += 1
                                     logger.warning(f"Query error: {error_type} - {result}")
-                        
-                        batch_duration = time.time() - batch_start
-                        batch_latency_ms = batch_duration * 1000
                         per_req_duration = batch_duration / max(1, len(args_list))
                         
                         logger.debug(
