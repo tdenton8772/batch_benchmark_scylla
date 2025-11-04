@@ -713,8 +713,10 @@ def parse_args():
                         help='ScyllaDB password')
     parser.add_argument('--consistency', default=os.getenv('SCYLLA_CONSISTENCY', 'LOCAL_ONE'),
                         help='Consistency level')
-    parser.add_argument('--local-dc', default=os.getenv('LOCAL_DC', 'aws-us-east-1'),
-                        help='Local datacenter name for DCAwareRoundRobinPolicy')
+    parser.add_argument('--local-dc', default=os.getenv('LOCAL_DC', None),
+                        help='Local datacenter name (auto-detected from AWS metadata if not specified)')
+    parser.add_argument('--local-rack', default=os.getenv('LOCAL_RACK', None),
+                        help='Local rack name (auto-detected from AWS AZ if not specified)')
     
     # Operational
     parser.add_argument('--dry-run', action='store_true', help='Dry run (no DB queries)')
@@ -765,6 +767,7 @@ def main():
             'scylla_password': args.password,
             'scylla_consistency': args.consistency,
             'local_dc': args.local_dc,
+            'local_rack': args.local_rack,
             'dry_run': args.dry_run,
         }
         
