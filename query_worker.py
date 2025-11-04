@@ -204,12 +204,13 @@ class WorkerMetrics:
         self.files_processed = 0
         self.rows_read = 0
         self.recent_queries = deque(maxlen=50000)  # Store timestamps for QPS calculation
+        self.recent_latencies = deque(maxlen=10000)  # Store recent batch latencies (ms)
     
     def record_batch_submitted(self, count: int):
         with self.lock:
             self.total_submitted += count
     
-    def record_batch_results(self, ok: int, found: int, not_found: int, timeouts: int, errors: int):
+    def record_batch_results(self, ok: int, found: int, not_found: int, timeouts: int, errors: int, latency_ms: float = 0):
         with self.lock:
             self.total_ok += ok
             self.total_found += found
@@ -219,6 +220,8 @@ class WorkerMetrics:
             now = time.time()
             for _ in range(ok):
                 self.recent_queries.append(now)
+            if latency_ms > 0:
+                self.recent_latencies.append(latency_ms)
     
     def record_rows_read(self, count: int):
         with self.lock:
@@ -237,6 +240,15 @@ class WorkerMetrics:
             cutoff = now - window_secs
             recent = [t for t in self.recent_queries if t >= cutoff]
             return len(recent) / window_secs if recent else 0.0
+    
+    def get_p99_latency(self) -> float:
+        """Get p99 latency in milliseconds."""
+        with self.lock:
+            if not self.recent_latencies:
+                return 0.0
+            sorted_latencies = sorted(self.recent_latencies)
+            idx = int(len(sorted_latencies) * 0.99)
+            return sorted_latencies[idx] if idx < len(sorted_latencies) else 0.0
     
     def get_snapshot(self) -> Dict[str, Any]:
         """Get current metrics snapshot."""
@@ -601,6 +613,7 @@ def query_thread(
                                     logger.warning(f"Query error: {error_type} - {result}")
                         
                         batch_duration = time.time() - batch_start
+                        batch_latency_ms = batch_duration * 1000
                         per_req_duration = batch_duration / max(1, len(args_list))
                         
                         logger.debug(
@@ -614,7 +627,8 @@ def query_thread(
                             found=found_count,
                             not_found=not_found_count,
                             timeouts=timeout_count,
-                            errors=error_count
+                            errors=error_count,
+                            latency_ms=batch_latency_ms
                         )
                     
                     except Exception as e:
@@ -651,10 +665,12 @@ def log_metrics(logger: logging.Logger, metrics: WorkerMetrics, batch_queue: que
     """Log current metrics."""
     snapshot = metrics.get_snapshot()
     qps = metrics.get_qps()
+    p99_latency = metrics.get_p99_latency()
     queue_depth = batch_queue.qsize()
     
     logger.info(
         f"qps={qps:.1f} | "
+        f"p99_lat={p99_latency:.1f}ms | "
         f"ok={snapshot['ok']} | "
         f"found={snapshot['found']} | "
         f"not_found={snapshot['not_found']} | "
