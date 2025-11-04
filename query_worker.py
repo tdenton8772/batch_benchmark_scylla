@@ -460,10 +460,10 @@ def query_thread(
                 load_balancing_policy=lbp,
                 consistency_level=consistency,
                 request_timeout=config['query_timeout_secs'],
-                # speculative_execution_policy=ConstantSpeculativeExecutionPolicy(
-                #     delay=config['query_timeout_secs'] * 0.10,  # 10% of timeout
-                #     max_attempts=2
-                # ),
+                speculative_execution_policy=ConstantSpeculativeExecutionPolicy(
+                    delay=3,  # 10% of timeout
+                    max_attempts=2
+                ),
                 retry_policy=FallthroughRetryPolicy(),
             )
 
@@ -504,37 +504,6 @@ def query_thread(
             prepared.is_idempotent = True
             prepared.consistency_level = consistency
             prepared.fetch_size = 1
-        #
-        #     cql_bulk = f"SELECT * FROM {config['scylla_table']} WHERE sort_key IN (?) BYPASS CACHE"
-        #     prepared_bulk = session.prepare(cql_bulk)
-        #     prepared_bulk.is_idempotent = True
-        #     prepared_bulk.consistency_level = consistency
-        #     prepared_bulk.fetch_size = 1
-        #
-        #     logger.info(f"Connected to ScyllaDB, keyspace={config['scylla_keyspace']}")
-        #
-        # def _key_parts_packed(self, parts):
-        #     for p in parts:
-        #         l = len(p)
-        #         yield struct.pack(">H%dsB" % l, l, p, 0)
-        #
-        # def get_routing_key(prepared, values):
-        #     routing_indexes = prepared.routing_key_indexes
-        #     if len(routing_indexes) == 1:
-        #         return values[routing_indexes[0]]
-        #     return b"".join(_key_parts_packed(values[i] for i in routing_indexes))
-        #
-        # def get_key_replica(session, prepared, values):
-        #     routing_key = get_routing_key(prepared, values)
-        #     tablet = self._cluster_metadata._tablets.get_tablet_for_key(
-        #         keyspace, query.table, self._cluster_metadata.token_map.token_class.from_key(query.routing_key))
-        #
-        #     if tablet is not None:
-        #         replicas_mapped = set(map(lambda r: r[0], tablet.replicas))
-        #         child_plan = child.make_query_plan(keyspace, query)
-        #
-        #         replicas = [host for host in child_plan if host.host_id in replicas_mapped]
-
 
         # Metrics reporting
         last_metrics_time = time.time()
