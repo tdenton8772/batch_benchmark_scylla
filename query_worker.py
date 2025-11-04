@@ -460,10 +460,10 @@ def query_thread(
                 load_balancing_policy=lbp,
                 consistency_level=consistency,
                 request_timeout=config['query_timeout_secs'],
-                speculative_execution_policy=ConstantSpeculativeExecutionPolicy(
-                    delay=3,  # 10% of timeout
-                    max_attempts=2
-                ),
+                # speculative_execution_policy=ConstantSpeculativeExecutionPolicy(
+                #     delay=3,  # 10% of timeout
+                #     max_attempts=2
+                # ),
                 retry_policy=FallthroughRetryPolicy(),
             )
 
