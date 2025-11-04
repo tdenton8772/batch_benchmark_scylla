@@ -539,9 +539,8 @@ def query_thread(
                     time.sleep(0.001 * batch_size)  # Simulate some work
                     metrics.record_batch_results(ok=batch_size, found=batch_size, not_found=0, timeouts=0, errors=0)
                 else:
-                    # Execute concurrent queries
-                    # Calculate concurrency dynamically (64-512 range based on batch size)
-                    concurrency = max(64, min(512, batch_size))
+                    # Execute concurrent queries using configured concurrency
+                    concurrency = config['concurrency']
                     args_list = [(key,) for key in batch]
                     
                     try:
