@@ -541,7 +541,8 @@ def query_thread(
                 else:
                     # Execute concurrent queries using configured concurrency
                     concurrency = config['concurrency']
-                    logger.info(f"DEBUG: batch_size={len(batch)}, concurrency={concurrency}")
+                    queue_size = batch_queue.qsize()
+                    logger.info(f"DEBUG: batch_size={len(batch)}, concurrency={concurrency}, queue_size={queue_size}")
                     args_list = [(key,) for key in batch]
                     
                     try:
